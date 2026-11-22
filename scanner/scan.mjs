@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadTiers, tierOf } from './names.mjs';
+import { loadTiers, tierOf, scoreName, stars } from './names.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = process.env.STATE_DIR || join(ROOT, 'state');
@@ -158,11 +158,12 @@ async function notifyFreed(entry) {
   const body = {
     username: 'MC Name Sniper',
     embeds: [{
-      title: `🟢 ${entry.name} is vrijgekomen!`,
+      title: `🟢 ${entry.name} ${stars(entry.score)} is vrijgekomen!`,
       url: `https://namemc.com/search?q=${encodeURIComponent(entry.name)}`,
-      color: 0x34d399,
+      color: entry.score >= 4.5 ? 0xfbbf24 : 0x34d399,
       fields: [
         { name: 'Soort', value: TYPE_LABEL[entry.type] || entry.type, inline: true },
+        { name: 'Waarde', value: `${stars(entry.score)} (${entry.score}/5)`, inline: true },
         { name: 'Claimen', value: 'Minecraft Launcher → Profiel → Naam wijzigen', inline: true },
       ],
       timestamp: new Date(entry.freedAt).toISOString(),
@@ -217,14 +218,14 @@ function markClaimed(name, now) {
   const f = freedMap.get(name);
   if (!f) return;
   freedMap.delete(name);
-  state.claimed.unshift({ name, type: f.type, freedAt: f.freedAt, claimedAt: now });
+  state.claimed.unshift({ name, type: f.type, freedAt: f.freedAt, claimedAt: now, score: f.score });
   log(`Weer geclaimd: ${name}`);
 }
 
 async function markFreed(tier, name) {
   const ok = await confirmFree(name);
   if (ok !== true) return false; // toch bezet of onzeker: niets veranderen
-  const entry = { name, type: tier.id, freedAt: Date.now() };
+  const entry = { name, type: tier.id, freedAt: Date.now(), score: scoreName(name, tier.id) };
   freedMap.set(name, entry);
   log(`VRIJGEKOMEN: ${name} (${TYPE_LABEL[tier.id]})`);
   await notifyFreed(entry);
@@ -301,6 +302,7 @@ function save() {
     writeFileSync(join(STATE_DIR, `taken-${t.id}.bin.gz`), gzipSync(taken[t.id].a));
   }
   state.freed = [...freedMap.values()].sort((a, b) => b.freedAt - a.freedAt);
+  for (const e of [...state.freed, ...state.claimed]) e.score ??= scoreName(e.name, e.type);
   state.claimed = state.claimed.slice(0, MAX_CLAIMED_KEPT);
   pruneHot();
   state.intervalMs = interval;
