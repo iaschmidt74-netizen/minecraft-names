@@ -1,0 +1,66 @@
+name: Scan namen
+
+on:
+  schedule:
+    - cron: '0 * * * *' # elk uur
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['site/**']
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Status ophalen
+        run: |
+          git clone --depth 1 --branch state "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" state \
+            || mkdir -p state
+          rm -rf state/.git
+
+      - name: Scannen
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          # Bij een push (alleen de site aangepast) kort scannen, anders ~52 minuten.
+          TIME_BUDGET_MIN: ${{ github.event_name == 'push' && '1' || '52' }}
+          STATE_DIR: state
+          OUT_DIR: site/data
+        run: node scanner/scan.mjs
+
+      - name: Status opslaan
+        if: always()
+        run: |
+          [ -f state/state.json ] || exit 0
+          cd state
+          git init -q -b state
+          git config user.name "scanner-bot"
+          git config user.email "scanner-bot@users.noreply.github.com"
+          git add -A
+          git commit -q -m "status $(date -u +%FT%TZ)"
+          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" state
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
