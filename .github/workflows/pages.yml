@@ -1,6 +1,6 @@
 name: Alleen site publiceren
 
-# Handmatig: zet de site online zonder scandata (bijv. voordat de eerste scan klaar is).
+# Handmatig: zet de nieuwste versie van de site online, met de huidige scandata erbij.
 on:
   workflow_dispatch:
 
@@ -16,6 +16,14 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Huidige scandata van de site meenemen
+        run: |
+          mkdir -p site/data
+          base="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data"
+          for f in freed.json status.json; do
+            curl -sfL "$base/$f" -o "site/data/$f" || rm -f "site/data/$f"
+          done
+          ls -la site/data
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
