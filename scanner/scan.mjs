@@ -4,7 +4,7 @@
 //   OUT_DIR          map waar de site-data heen gaat (default ./site/data)
 //   TIME_BUDGET_MIN  hoe lang deze run mag scannen (default 45)
 //   DISCORD_WEBHOOK    optioneel: webhook-URL voor meldingen
-//   DISCORD_WEBHOOK_3  optioneel: apart kanaal voor namen van 3 tekens (anders DISCORD_WEBHOOK)
+//   DISCORD_WEBHOOK_3  optioneel: apart kanaal voor gouden namen: 3 tekens of 4+ sterren (anders DISCORD_WEBHOOK)
 //   FAKE_FREE        alleen voor testen: komma-lijst namen die als 'vrij' behandeld worden
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -19,7 +19,8 @@ const OUT_DIR = process.env.OUT_DIR || join(ROOT, 'site', 'data');
 const BUDGET_MS = Number(process.env.TIME_BUDGET_MIN || 45) * 60_000;
 const WEBHOOK = process.env.DISCORD_WEBHOOK || '';
 const WEBHOOK_3 = process.env.DISCORD_WEBHOOK_3 || WEBHOOK;
-const hookFor = (type) => (type === '3' ? WEBHOOK_3 : WEBHOOK);
+const isGold = (e) => e.type === '3' || (e.score ?? 0) >= 4;
+const hookFor = (e) => (isGold(e) ? WEBHOOK_3 : WEBHOOK);
 const FAKE_FREE = new Set((process.env.FAKE_FREE || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 
 const BULK_ENDPOINTS = [
@@ -158,7 +159,7 @@ let discordSent = 0;
 const pendingDiscord = [];
 
 async function notifyFreed(entry) {
-  if (!hookFor(entry.type)) return;
+  if (!hookFor(entry)) return;
   if (discordSent >= MAX_DISCORD_PER_RUN) { pendingDiscord.push(entry.name); return; }
   discordSent++;
   const body = {
@@ -166,7 +167,7 @@ async function notifyFreed(entry) {
     embeds: [{
       title: `🟢 ${entry.name} ${stars(entry.score)} is vrijgekomen!`,
       url: `https://namemc.com/search?q=${encodeURIComponent(entry.name)}`,
-      color: entry.type === '3' || entry.score >= 4 ? 0xfbbf24 : 0x34d399,
+      color: isGold(entry) ? 0xfbbf24 : 0x34d399,
       fields: [
         { name: 'Soort', value: TYPE_LABEL[entry.type] || entry.type, inline: true },
         { name: 'Waarde', value: `${stars(entry.score)} (${entry.score}/5)`, inline: true },
@@ -176,7 +177,7 @@ async function notifyFreed(entry) {
     }],
   };
   try {
-    const res = await fetch(hookFor(entry.type), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await fetch(hookFor(entry), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!res.ok) log(`Discord-melding mislukt: HTTP ${res.status}`);
   } catch (e) { log('Discord-melding mislukt:', e.message); }
   await sleep(1_200);
@@ -217,10 +218,10 @@ async function flushAvailDigest(force = false) {
     .filter((e) => e.type)
     .sort((a, b) => b.score - a.score || a.name.length - b.name.length || a.name.localeCompare(b.name));
   if (!items.length) return;
-  // 3 tekens: eigen kanaal (goud). Overige toppers (4+ sterren): goud. De rest: blauw.
+  // Goud (3 tekens en 4+ sterren) naar het gouden kanaal, de rest (blauw) naar het gewone kanaal.
   const groups = [
     { items: items.filter((e) => e.type === '3'), color: 0xfbbf24, label: '🟡 3 tekens', url: WEBHOOK_3 },
-    { items: items.filter((e) => e.type !== '3' && e.score >= 4), color: 0xfbbf24, label: '⭐ Toppers', url: WEBHOOK },
+    { items: items.filter((e) => e.type !== '3' && e.score >= 4), color: 0xfbbf24, label: '⭐ Toppers', url: WEBHOOK_3 },
     { items: items.filter((e) => e.type !== '3' && e.score < 4), color: 0x60a5fa, label: '🔵 Overige', url: WEBHOOK },
   ].filter((g) => g.items.length && g.url);
   for (const g of groups) {
