@@ -59,10 +59,6 @@ state.freed ??= [];   // { name, type, freedAt }
 state.claimed ??= []; // { name, type, freedAt, claimedAt }
 state.available ??= {}; // name -> { type, since, score }: nooit bezet gezien, niet geblokkeerd
 const MAX_AVAILABLE_SHOWN = 1500;
-const newAvailable = [];
-const AVAIL_NOTIFY_MIN_SCORE = 4;
-const MAX_AVAIL_NOTIFY_PER_RUN = 10;
-let availNotified = 0;
 let availDirty = false;
 
 const seen = {}, taken = {};
@@ -167,7 +163,7 @@ async function notifyFreed(entry) {
     embeds: [{
       title: `🟢 ${entry.name} ${stars(entry.score)} is vrijgekomen!`,
       url: `https://namemc.com/search?q=${encodeURIComponent(entry.name)}`,
-      color: entry.score >= 4.5 ? 0xfbbf24 : 0x34d399,
+      color: entry.type === '3' || entry.score >= 4 ? 0xfbbf24 : 0x34d399,
       fields: [
         { name: 'Soort', value: TYPE_LABEL[entry.type] || entry.type, inline: true },
         { name: 'Waarde', value: `${stars(entry.score)} (${entry.score}/5)`, inline: true },
@@ -183,64 +179,80 @@ async function notifyFreed(entry) {
   await sleep(1_200);
 }
 
-async function notifyAvailableNow(name, a) {
+// Beschikbare namen: elke minuut één bericht met alle nieuwe namen van die minuut.
+const pendingAvail = [];
+let lastDigest = 0;
+const DIGEST_EVERY_MS = 60_000;
+
+function queueAvailable(name, a) {
   log(`BESCHIKBAAR: ${name} (${a.score} sterren)`);
-  if (!WEBHOOK || availNotified >= MAX_AVAIL_NOTIFY_PER_RUN) return;
-  availNotified++;
-  a.notified = true;
-  const body = {
-    username: 'MC Name Sniper',
-    embeds: [{
-      title: `🔵 ${name} ${stars(a.score)} is beschikbaar!`,
-      url: `https://namemc.com/search?q=${encodeURIComponent(name)}`,
-      description: 'Deze naam is nog nooit geclaimd. Mojang kan hem wel geblokkeerd hebben: probeer hem op minecraft.net/msaprofile.',
-      color: 0x60a5fa,
-      fields: [
-        { name: 'Soort', value: TYPE_LABEL[a.type] || a.type, inline: true },
-        { name: 'Waarde', value: `${stars(a.score)} (${a.score}/5)`, inline: true },
-      ],
-      timestamp: new Date(a.since).toISOString(),
-    }],
-  };
-  try {
-    const res = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) log(`Discord-melding mislukt: HTTP ${res.status}`);
-  } catch (e) { log('Discord-melding mislukt:', e.message); }
-  await sleep(1_200);
+  pendingAvail.push(name);
 }
 
-async function notifyAvailableSummary() {
-  if (!WEBHOOK || newAvailable.length === 0) return;
-  const best = newAvailable
+async function postDiscord(body) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const res = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (res.status === 429) {
+        const wait = Number((await res.json().catch(() => ({}))).retry_after || 2);
+        await sleep(Math.ceil(wait * 1000) + 250);
+        continue;
+      }
+      if (!res.ok) log(`Discord-bericht mislukt: HTTP ${res.status}`);
+      return;
+    } catch (e) { log('Discord-bericht mislukt:', e.message); await sleep(2000); }
+  }
+}
+
+async function flushAvailDigest(force = false) {
+  if (!pendingAvail.length) return;
+  if (!force && Date.now() - lastDigest < DIGEST_EVERY_MS) return;
+  lastDigest = Date.now();
+  const items = pendingAvail.splice(0)
     .map((n) => ({ name: n, ...state.available[n] }))
-    .filter((e) => e.type && !e.notified)
-    .sort((a, b) => b.score - a.score || a.name.length - b.name.length)
-    .slice(0, 15);
-  if (!best.length) return;
-  const rest = newAvailable.length;
-  const lines = best.map((e) => `\`${e.name}\` ${stars(e.score)} · ${TYPE_LABEL[e.type] || e.type}`).join('\n');
-  const body = {
-    username: 'MC Name Sniper',
-    embeds: [{
-      title: `🔵 ${rest} nieuwe beschikbare namen gevonden deze run`,
-      description: `Namen die nog nooit geclaimd zijn (mogelijk wel geblokkeerd door Mojang). De beste:\n\n${lines}`,
-      color: 0x60a5fa,
-      timestamp: new Date().toISOString(),
-    }],
-  };
-  try {
-    const res = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) log(`Discord-overzicht mislukt: HTTP ${res.status}`);
-  } catch (e) { log('Discord-overzicht mislukt:', e.message); }
+    .filter((e) => e.type)
+    .sort((a, b) => b.score - a.score || a.name.length - b.name.length || a.name.localeCompare(b.name));
+  if (!WEBHOOK || !items.length) return;
+  // Toppers (3 tekens of 4+ sterren) in een gouden blok, de rest in blauw.
+  const isTop = (e) => e.type === '3' || e.score >= 4;
+  const groups = [
+    { items: items.filter(isTop), color: 0xfbbf24, label: '⭐ Toppers' },
+    { items: items.filter((e) => !isTop(e)), color: 0x60a5fa, label: '🔵 Overige' },
+  ].filter((g) => g.items.length);
+  // Elk blok in stukken van max ~3.800 tekens (Discord-limiet 4.096).
+  const embeds = [];
+  for (const g of groups) {
+    let cur = [], len = 0;
+    const parts = [];
+    for (const e of g.items) {
+      const line = `\`${e.name}\` ${stars(e.score)} · ${TYPE_LABEL[e.type] || e.type}`;
+      if (len + line.length + 1 > 3800) { parts.push(cur); cur = []; len = 0; }
+      cur.push(line); len += line.length + 1;
+    }
+    if (cur.length) parts.push(cur);
+    parts.forEach((p, i) => embeds.push({
+      title: `${g.label}: ${g.items.length} ${g.items.length === 1 ? 'naam' : 'namen'} beschikbaar${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ''}`,
+      description: p.join('\n'),
+      color: g.color,
+      url: 'https://iaschmidt74-netizen.github.io/minecraft-names/',
+    }));
+  }
+  embeds[embeds.length - 1].footer = { text: 'Nog nooit geclaimd. Mojang kan sommige geblokkeerd hebben: probeer op minecraft.net/msaprofile' };
+  embeds[embeds.length - 1].timestamp = new Date().toISOString();
+  // Discord: max 10 blokken per bericht en ~6.000 tekens per bericht, dus 1 blok per bericht.
+  for (const e of embeds) {
+    await postDiscord({ username: 'MC Name Sniper', embeds: [e] });
+    await sleep(1_200);
+  }
 }
 
 async function flushDiscordSummary() {
   if (!WEBHOOK || pendingDiscord.length === 0) return;
-  const list = pendingDiscord.slice(0, 60).join(', ');
-  await fetch(WEBHOOK, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'MC Name Sniper', content: `🟢 Nog ${pendingDiscord.length} namen vrijgekomen: ${list}` }),
-  }).catch(() => {});
+  for (let i = 0; i < pendingDiscord.length; i += 150) {
+    const list = pendingDiscord.slice(i, i + 150).join(', ');
+    await postDiscord({ username: 'MC Name Sniper', content: `🟢 Nog meer vrijgekomen namen: ${list}`.slice(0, 1990) });
+    await sleep(1_200);
+  }
 }
 
 // ---------- Logica ----------
@@ -312,9 +324,8 @@ async function processEntries(entries) {
       if (!state.available[name] && !freedMap.has(name) && !isBlocked(name)) {
         const a = { type: tier.id, since: now, score: scoreName(name, tier.id) };
         state.available[name] = a;
-        newAvailable.push(name);
         availDirty = true;
-        if (a.score >= AVAIL_NOTIFY_MIN_SCORE) await notifyAvailableNow(name, a);
+        queueAvailable(name, a);
       }
     }
     seen[tier.id].set(idx, 1);
@@ -351,6 +362,7 @@ async function scanTiers(deadline) {
     if (next >= t.size) { next = 0; state.passes[t.id]++; log(`Ronde ${t.id} klaar (#${state.passes[t.id]})`); }
     state.cursors[t.id] = next;
     if ((liveDirty && Date.now() - lastLive > 20_000) || (availDirty && Date.now() - lastLive > 300_000)) { liveDirty = true; await publishLive(); }
+    await flushAvailDigest();
     if (++chunks % 500 === 0) log(`${stats.checked} namen gecheckt, tempo ${interval} ms, hot ${Object.keys(state.hot).length}, cursors ${JSON.stringify(state.cursors)}`);
   }
 }
@@ -456,7 +468,7 @@ const deadline = Date.now() + BUDGET_MS;
 log(`Start. Budget ${BUDGET_MS / 60000} min, ${freedMap.size} vrije namen bekend, cursors ${JSON.stringify(state.cursors)}`);
 await scanTiers(deadline);
 await flushDiscordSummary();
-await notifyAvailableSummary();
+await flushAvailDigest(true);
 if (availDirty) liveDirty = true;
 await publishLive();
 save();
