@@ -104,6 +104,8 @@
     background: linear-gradient(90deg, #059669, #34d399);
     border-radius: 99px;
   }
+  .run-btn { justify-content: center; padding: 10px 12px; font-size: 14px; }
+  .run-hint { font-size: 11px; color: var(--muted); line-height: 1.4; }
   .live {
     display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
     color: var(--accent); background: var(--accent-dim);
@@ -253,7 +255,11 @@
       </div>
     </div>
 
-    <div class="live" id="live"><span class="dot"></span><span id="live-text">Laden...</span></div>
+    <div style="margin-top:auto;display:grid;gap:10px">
+      <a class="btn primary run-btn" id="run-btn" href="#" target="_blank" rel="noopener">▶ Scan nu starten</a>
+      <div class="run-hint">Opent GitHub: klik daar op <b>Run workflow</b> → <b>Run workflow</b> (je moet ingelogd zijn).</div>
+      <div class="live" id="live" style="margin-top:0"><span class="dot"></span><span id="live-text">Laden...</span></div>
+    </div>
   </aside>
 
   <main>
@@ -341,6 +347,12 @@
       if (res.ok) live = await res.json();
     } catch {}
     return live;
+  }
+
+  {
+    const owner = location.hostname.endsWith(".github.io") ? location.hostname.split(".")[0] : "iaschmidt74-netizen";
+    const repo = location.pathname.split("/").filter(Boolean)[0] || "minecraft-names";
+    document.getElementById("run-btn").href = `https://github.com/${owner}/${repo}/actions/workflows/scan.yml`;
   }
 
   async function load() {
