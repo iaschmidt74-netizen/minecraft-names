@@ -3,7 +3,8 @@
 //   STATE_DIR        map met de status (default ./state)
 //   OUT_DIR          map waar de site-data heen gaat (default ./site/data)
 //   TIME_BUDGET_MIN  hoe lang deze run mag scannen (default 45)
-//   DISCORD_WEBHOOK  optioneel: webhook-URL voor meldingen
+//   DISCORD_WEBHOOK    optioneel: webhook-URL voor meldingen
+//   DISCORD_WEBHOOK_3  optioneel: apart kanaal voor namen van 3 tekens (anders DISCORD_WEBHOOK)
 //   FAKE_FREE        alleen voor testen: komma-lijst namen die als 'vrij' behandeld worden
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -17,6 +18,8 @@ const STATE_DIR = process.env.STATE_DIR || join(ROOT, 'state');
 const OUT_DIR = process.env.OUT_DIR || join(ROOT, 'site', 'data');
 const BUDGET_MS = Number(process.env.TIME_BUDGET_MIN || 45) * 60_000;
 const WEBHOOK = process.env.DISCORD_WEBHOOK || '';
+const WEBHOOK_3 = process.env.DISCORD_WEBHOOK_3 || WEBHOOK;
+const hookFor = (type) => (type === '3' ? WEBHOOK_3 : WEBHOOK);
 const FAKE_FREE = new Set((process.env.FAKE_FREE || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 
 const BULK_ENDPOINTS = [
@@ -155,7 +158,7 @@ let discordSent = 0;
 const pendingDiscord = [];
 
 async function notifyFreed(entry) {
-  if (!WEBHOOK) return;
+  if (!hookFor(entry.type)) return;
   if (discordSent >= MAX_DISCORD_PER_RUN) { pendingDiscord.push(entry.name); return; }
   discordSent++;
   const body = {
@@ -173,7 +176,7 @@ async function notifyFreed(entry) {
     }],
   };
   try {
-    const res = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await fetch(hookFor(entry.type), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!res.ok) log(`Discord-melding mislukt: HTTP ${res.status}`);
   } catch (e) { log('Discord-melding mislukt:', e.message); }
   await sleep(1_200);
@@ -189,10 +192,11 @@ function queueAvailable(name, a) {
   pendingAvail.push(name);
 }
 
-async function postDiscord(body) {
+async function postDiscord(body, url = WEBHOOK) {
+  if (!url) return;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const res = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (res.status === 429) {
         const wait = Number((await res.json().catch(() => ({}))).retry_after || 2);
         await sleep(Math.ceil(wait * 1000) + 250);
@@ -212,16 +216,15 @@ async function flushAvailDigest(force = false) {
     .map((n) => ({ name: n, ...state.available[n] }))
     .filter((e) => e.type)
     .sort((a, b) => b.score - a.score || a.name.length - b.name.length || a.name.localeCompare(b.name));
-  if (!WEBHOOK || !items.length) return;
-  // Toppers (3 tekens of 4+ sterren) in een gouden blok, de rest in blauw.
-  const isTop = (e) => e.type === '3' || e.score >= 4;
+  if (!items.length) return;
+  // 3 tekens: eigen kanaal (goud). Overige toppers (4+ sterren): goud. De rest: blauw.
   const groups = [
-    { items: items.filter(isTop), color: 0xfbbf24, label: '⭐ Toppers' },
-    { items: items.filter((e) => !isTop(e)), color: 0x60a5fa, label: '🔵 Overige' },
-  ].filter((g) => g.items.length);
-  // Elk blok in stukken van max ~3.800 tekens (Discord-limiet 4.096).
-  const embeds = [];
+    { items: items.filter((e) => e.type === '3'), color: 0xfbbf24, label: '🟡 3 tekens', url: WEBHOOK_3 },
+    { items: items.filter((e) => e.type !== '3' && e.score >= 4), color: 0xfbbf24, label: '⭐ Toppers', url: WEBHOOK },
+    { items: items.filter((e) => e.type !== '3' && e.score < 4), color: 0x60a5fa, label: '🔵 Overige', url: WEBHOOK },
+  ].filter((g) => g.items.length && g.url);
   for (const g of groups) {
+    // In stukken van max ~3.800 tekens (Discord-limiet 4.096), 1 blok per bericht.
     let cur = [], len = 0;
     const parts = [];
     for (const e of g.items) {
@@ -230,19 +233,17 @@ async function flushAvailDigest(force = false) {
       cur.push(line); len += line.length + 1;
     }
     if (cur.length) parts.push(cur);
-    parts.forEach((p, i) => embeds.push({
-      title: `${g.label}: ${g.items.length} ${g.items.length === 1 ? 'naam' : 'namen'} beschikbaar${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ''}`,
-      description: p.join('\n'),
-      color: g.color,
-      url: 'https://iaschmidt74-netizen.github.io/minecraft-names/',
-    }));
-  }
-  embeds[embeds.length - 1].footer = { text: 'Nog nooit geclaimd. Mojang kan sommige geblokkeerd hebben: probeer op minecraft.net/msaprofile' };
-  embeds[embeds.length - 1].timestamp = new Date().toISOString();
-  // Discord: max 10 blokken per bericht en ~6.000 tekens per bericht, dus 1 blok per bericht.
-  for (const e of embeds) {
-    await postDiscord({ username: 'MC Name Sniper', embeds: [e] });
-    await sleep(1_200);
+    for (let i = 0; i < parts.length; i++) {
+      const last = i === parts.length - 1;
+      await postDiscord({ username: 'MC Name Sniper', embeds: [{
+        title: `${g.label}: ${g.items.length} ${g.items.length === 1 ? 'naam' : 'namen'} beschikbaar${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ''}`,
+        description: parts[i].join('\n'),
+        color: g.color,
+        url: 'https://iaschmidt74-netizen.github.io/minecraft-names/',
+        ...(last ? { footer: { text: 'Nog nooit geclaimd. Mojang kan sommige geblokkeerd hebben: probeer op minecraft.net/msaprofile' }, timestamp: new Date().toISOString() } : {}),
+      }] }, g.url);
+      await sleep(1_200);
+    }
   }
 }
 

@@ -12,7 +12,7 @@ Scant automatisch zeldzame Minecraft Java-namen via de officiële Mojang-API en 
 - **Site**: `site/index.html`, gepubliceerd via GitHub Pages.
 
 ## Instellingen
-- Discord: repository-secret `DISCORD_WEBHOOK` = webhook-URL van je kanaal.
+- Discord: repository-secret `DISCORD_WEBHOOK` = webhook-URL van je kanaal. Optioneel `DISCORD_WEBHOOK_3` = apart kanaal voor namen van 3 tekens.
 
 ## Lokaal testen
 ```sh
