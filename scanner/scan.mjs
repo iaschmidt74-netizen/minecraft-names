@@ -154,6 +154,7 @@ async function confirmFree(name) {
 }
 
 // ---------- Discord ----------
+const TYPE_EN = { '3': '3 chars', '4': '4 chars', 'w': 'Word', 'd': '4 letters' }; // voor Discord
 const TYPE_LABEL = { '3': '3 tekens', '4': '4 tekens', 'w': 'Woord', 'd': 'Ontdekt' };
 let discordSent = 0;
 const pendingDiscord = [];
@@ -165,13 +166,13 @@ async function notifyFreed(entry) {
   const body = {
     username: 'MC Name Sniper',
     embeds: [{
-      title: `🟢 ${entry.name} ${stars(entry.score)} is vrijgekomen!`,
+      title: `🟢 ${entry.name} ${stars(entry.score)} just became available!`,
       url: `https://namemc.com/search?q=${encodeURIComponent(entry.name)}`,
       color: isGold(entry) ? 0xfbbf24 : 0x34d399,
       fields: [
-        { name: 'Soort', value: TYPE_LABEL[entry.type] || entry.type, inline: true },
-        { name: 'Waarde', value: `${stars(entry.score)} (${entry.score}/5)`, inline: true },
-        { name: 'Claimen', value: 'Minecraft Launcher → Profiel → Naam wijzigen', inline: true },
+        { name: 'Type', value: TYPE_EN[entry.type] || entry.type, inline: true },
+        { name: 'Value', value: `${stars(entry.score)} (${entry.score}/5)`, inline: true },
+        { name: 'Claim', value: 'minecraft.net/msaprofile → Change name', inline: true },
       ],
       timestamp: new Date(entry.freedAt).toISOString(),
     }],
@@ -220,16 +221,16 @@ async function flushAvailDigest(force = false) {
   if (!items.length) return;
   // Goud (3 tekens en 4+ sterren) naar het gouden kanaal, de rest (blauw) naar het gewone kanaal.
   const groups = [
-    { items: items.filter((e) => e.type === '3'), color: 0xfbbf24, label: '🟡 3 tekens', url: WEBHOOK_3 },
+    { items: items.filter((e) => e.type === '3'), color: 0xfbbf24, label: '🟡 3 chars', url: WEBHOOK_3 },
     { items: items.filter((e) => e.type !== '3' && e.score >= 4), color: 0xfbbf24, label: '⭐ Toppers', url: WEBHOOK_3 },
-    { items: items.filter((e) => e.type !== '3' && e.score < 4), color: 0x60a5fa, label: '🔵 Overige', url: WEBHOOK },
+    { items: items.filter((e) => e.type !== '3' && e.score < 4), color: 0x60a5fa, label: '🔵 Others', url: WEBHOOK },
   ].filter((g) => g.items.length && g.url);
   for (const g of groups) {
     // In stukken van max ~3.800 tekens (Discord-limiet 4.096), 1 blok per bericht.
     let cur = [], len = 0;
     const parts = [];
     for (const e of g.items) {
-      const line = `\`${e.name}\` ${stars(e.score)} · ${TYPE_LABEL[e.type] || e.type}`;
+      const line = `\`${e.name}\` ${stars(e.score)} · ${TYPE_EN[e.type] || e.type}`;
       if (len + line.length + 1 > 3800) { parts.push(cur); cur = []; len = 0; }
       cur.push(line); len += line.length + 1;
     }
@@ -237,11 +238,11 @@ async function flushAvailDigest(force = false) {
     for (let i = 0; i < parts.length; i++) {
       const last = i === parts.length - 1;
       await postDiscord({ username: 'MC Name Sniper', embeds: [{
-        title: `${g.label}: ${g.items.length} ${g.items.length === 1 ? 'naam' : 'namen'} beschikbaar${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ''}`,
+        title: `${g.label}: ${g.items.length} ${g.items.length === 1 ? 'name' : 'names'} available${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ''}`,
         description: parts[i].join('\n'),
         color: g.color,
         url: 'https://iaschmidt74-netizen.github.io/minecraft-names/',
-        ...(last ? { footer: { text: 'Nog nooit geclaimd. Mojang kan sommige geblokkeerd hebben: probeer op minecraft.net/msaprofile' }, timestamp: new Date().toISOString() } : {}),
+        ...(last ? { footer: { text: 'Never claimed. Mojang may have blocked some: try them at minecraft.net/msaprofile' }, timestamp: new Date().toISOString() } : {}),
       }] }, g.url);
       await sleep(1_200);
     }
@@ -252,7 +253,7 @@ async function flushDiscordSummary() {
   if (!WEBHOOK || pendingDiscord.length === 0) return;
   for (let i = 0; i < pendingDiscord.length; i += 150) {
     const list = pendingDiscord.slice(i, i + 150).join(', ');
-    await postDiscord({ username: 'MC Name Sniper', content: `🟢 Nog meer vrijgekomen namen: ${list}`.slice(0, 1990) });
+    await postDiscord({ username: 'MC Name Sniper', content: `🟢 More names just became available: ${list}`.slice(0, 1990) });
     await sleep(1_200);
   }
 }
