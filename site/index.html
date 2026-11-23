@@ -304,6 +304,20 @@
   let claimed = [];
   let status = null;
 
+  // Live-lijst: freed.json op branch "live", via de GitHub-API (max 60 keer/uur zonder login, dus elke 2 min).
+  const OWNER = location.hostname.endsWith(".github.io") ? location.hostname.split(".")[0] : null;
+  const REPO = location.pathname.split("/").filter(Boolean)[0];
+  let live = null, lastLiveFetch = 0;
+  async function fetchLive() {
+    if (!OWNER || !REPO || Date.now() - lastLiveFetch < 110 * 1000) return live;
+    lastLiveFetch = Date.now();
+    try {
+      const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/freed.json?ref=live`, { headers: { Accept: "application/vnd.github.raw+json" } });
+      if (res.ok) live = await res.json();
+    } catch {}
+    return live;
+  }
+
   async function load() {
     try {
       const bust = `?t=${Date.now()}`;
@@ -311,8 +325,10 @@
         fetch('data/freed.json' + bust).then((r) => r.json()),
         fetch('data/status.json' + bust).then((r) => r.json()),
       ]);
-      freed = f.freed || [];
-      claimed = (f.claimed || []).map((c) => ({ ...c, wasFree: c.claimedAt - c.freedAt }));
+      const l = await fetchLive();
+      const best = l && (l.updatedAt || 0) > (f.updatedAt || 0) ? l : f;
+      freed = best.freed || [];
+      claimed = (best.claimed || []).map((c) => ({ ...c, wasFree: c.claimedAt - c.freedAt }));
       status = s;
     } catch {
       status = null;

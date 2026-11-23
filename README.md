@@ -6,6 +6,7 @@ Scant automatisch zeldzame Minecraft Java-namen via de officiële Mojang-API en 
 - **Hoe**: GitHub Actions draait elk uur ~52 minuten (`.github/workflows/scan.yml`). Een naam die eerder bezet was en nu vrij is, wordt dubbel gecontroleerd. Daarna komt hij bovenaan de site en gaat er een Discord-bericht uit.
 - **Tempo**: Mojang laat ~1.000 namen per minuut toe, vanaf GitHub ~675 per minuut, dus alles is in ~1,75 uur rond. De eerste ronde is een nulmeting; pas daarna kunnen namen "vrijkomen".
 - **Snelle lijst**: namen die de scanner zelf ziet veranderen (vrijkomen of geclaimd worden) gaan op een snelle lijst. De top 300 (plus alle nu vrije namen) wordt elke minuut gecheckt.
+- **Live-lijst**: zodra er een naam vrijkomt of weer geclaimd wordt, zet de scanner `freed.json` direct op branch `live`. De site leest die elke 2 minuten, dus vrije namen staan binnen een paar minuten op de site.
 - **Status**: staat in de branch `state` en wordt elke run overschreven.
 - **Site**: `site/index.html`, gepubliceerd via GitHub Pages.
 

@@ -40,6 +40,8 @@ jobs:
       - name: Scannen
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          # Voor de live-lijst op branch 'live' (zodat de site vrije namen meteen toont)
+          GITHUB_TOKEN: ${{ github.token }}
           # Bij een push (alleen de site aangepast) kort scannen, anders ~52 minuten.
           TIME_BUDGET_MIN: ${{ github.event_name == 'push' && '1' || '52' }}
           STATE_DIR: state

@@ -219,6 +219,7 @@ function markClaimed(name, now) {
   if (!f) return;
   freedMap.delete(name);
   state.claimed.unshift({ name, type: f.type, freedAt: f.freedAt, claimedAt: now, score: f.score });
+  liveDirty = true;
   log(`Weer geclaimd: ${name}`);
 }
 
@@ -228,7 +229,9 @@ async function markFreed(tier, name) {
   const entry = { name, type: tier.id, freedAt: Date.now(), score: scoreName(name, tier.id) };
   freedMap.set(name, entry);
   log(`VRIJGEKOMEN: ${name} (${TYPE_LABEL[tier.id]})`);
+  liveDirty = true;
   await notifyFreed(entry);
+  await publishLive();
   return true;
 }
 
@@ -281,8 +284,58 @@ async function scanTiers(deadline) {
     let next = start + entries.length;
     if (next >= t.size) { next = 0; state.passes[t.id]++; log(`Ronde ${t.id} klaar (#${state.passes[t.id]})`); }
     state.cursors[t.id] = next;
+    if (liveDirty && Date.now() - lastLive > 20_000) await publishLive();
     if (++chunks % 500 === 0) log(`${stats.checked} namen gecheckt, tempo ${interval} ms, hot ${Object.keys(state.hot).length}, cursors ${JSON.stringify(state.cursors)}`);
   }
+}
+
+// ---------- Live-lijst op GitHub (branch 'live') ----------
+// Zodra er iets verandert, wordt freed.json direct naar de branch 'live' gestuurd,
+// zodat de website het binnen een paar minuten toont (niet pas aan het eind van de run).
+const GH_TOKEN = process.env.GITHUB_TOKEN || '';
+const GH_REPO = process.env.GITHUB_REPOSITORY || '';
+const LIVE_BRANCH = process.env.LIVE_BRANCH || 'live';
+let liveSha = null, liveReady = false, liveDirty = false, lastLive = 0;
+
+function gh(path, opts = {}) {
+  return fetch('https://api.github.com/' + path, {
+    ...opts,
+    headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'mc-name-scanner' },
+    signal: AbortSignal.timeout(20_000),
+  });
+}
+
+function freedPayload() {
+  const freed = [...freedMap.values()].sort((a, b) => b.freedAt - a.freedAt);
+  for (const e of [...freed, ...state.claimed]) e.score ??= scoreName(e.name, e.type);
+  return { updatedAt: Date.now(), freed, claimed: state.claimed.slice(0, MAX_CLAIMED_KEPT) };
+}
+
+async function ensureLive() {
+  if (liveReady) return true;
+  let r = await gh(`repos/${GH_REPO}/git/ref/heads/${LIVE_BRANCH}`);
+  if (r.status === 404) {
+    const main = await (await gh(`repos/${GH_REPO}/git/ref/heads/main`)).json();
+    r = await gh(`repos/${GH_REPO}/git/refs`, { method: 'POST', body: JSON.stringify({ ref: `refs/heads/${LIVE_BRANCH}`, sha: main.object.sha }) });
+    if (!r.ok) { log(`Branch live aanmaken mislukt: HTTP ${r.status}`); return false; }
+  }
+  const f = await gh(`repos/${GH_REPO}/contents/freed.json?ref=${LIVE_BRANCH}`);
+  liveSha = f.ok ? (await f.json()).sha : null;
+  liveReady = true;
+  return true;
+}
+
+async function publishLive() {
+  if (!GH_TOKEN || !GH_REPO || !liveDirty) return;
+  lastLive = Date.now();
+  try {
+    if (!(await ensureLive())) return;
+    const body = { message: 'Live update', branch: LIVE_BRANCH, content: Buffer.from(JSON.stringify(freedPayload())).toString('base64') };
+    if (liveSha) body.sha = liveSha;
+    const r = await gh(`repos/${GH_REPO}/contents/freed.json`, { method: 'PUT', body: JSON.stringify(body) });
+    if (r.ok) { liveSha = (await r.json()).content.sha; liveDirty = false; log('Live-lijst bijgewerkt'); }
+    else { log(`Live-lijst bijwerken mislukt: HTTP ${r.status}`); liveReady = false; }
+  } catch (e) { log('Live-lijst bijwerken mislukt:', e.message); liveReady = false; }
 }
 
 function pruneHot() {
@@ -324,7 +377,7 @@ function save() {
       taken: taken[t.id].count(),
     }])),
   };
-  writeFileSync(join(OUT_DIR, 'freed.json'), JSON.stringify({ freed: state.freed, claimed: state.claimed }));
+  writeFileSync(join(OUT_DIR, 'freed.json'), JSON.stringify(freedPayload()));
   writeFileSync(join(OUT_DIR, 'status.json'), JSON.stringify(status));
 }
 
@@ -332,5 +385,6 @@ const deadline = Date.now() + BUDGET_MS;
 log(`Start. Budget ${BUDGET_MS / 60000} min, ${freedMap.size} vrije namen bekend, cursors ${JSON.stringify(state.cursors)}`);
 await scanTiers(deadline);
 await flushDiscordSummary();
+await publishLive();
 save();
 log(`Klaar. ${stats.checked} namen gecheckt in ${stats.requests} verzoeken, ${stats.rateLimited}x rate limit, ${stats.errors} fouten. Vrij: ${freedMap.size}`);
