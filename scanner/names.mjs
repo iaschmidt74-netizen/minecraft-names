@@ -43,9 +43,17 @@ export function loadTiers(wordsPath) {
   const fourList = [...four].sort();
   const fourIdx = new Map(fourList.map((w, i) => [w, i]));
 
+  // Ontdekt-lijst, zonder namen die al in een andere lijst zitten
+  const disc = discoveryNames().filter((n) => !fourIdx.has(n));
+  const discIdx = new Map(disc.map((w, i) => [w, i]));
+  // Krijgt 25% van het tempo: gewicht = 1/3 van de som van de andere lijsten.
+  const otherWeight = B ** 3 + fourList.length + words.length;
+  const discTier = { id: 'd', size: disc.length, weight: otherWeight / 3, nameAt: (i) => disc[i], indexOf: (n) => discIdx.get(n) ?? -1 };
+
   return {
     '3': { id: '3', size: B ** 3, weight: B ** 3, nameAt: (i) => nameAt(3, i), indexOf: (n) => (n.length === 3 ? fixedIndex(n) : -1) },
     '4': { id: '4', size: fourList.length, weight: fourList.length, nameAt: (i) => fourList[i], indexOf: (n) => fourIdx.get(n) ?? -1 },
+    'd': discTier,
     'w': { id: 'w', size: words.length, weight: words.length, nameAt: (i) => words[i], indexOf: (n) => wordIdx.get(n) ?? -1 },
   };
 }
@@ -82,7 +90,17 @@ const isLetter = (c) => c >= 'a' && c <= 'z';
 export function scoreName(name, type) {
   const n = name.toLowerCase();
   let s;
-  if (type === 'w') {
+  if (type === 'd') {
+    // 4 letters: hoe uitspreekbaar / stoer ziet hij eruit?
+    const v = [...n].map((c) => 'aeiouy'.includes(c));
+    const vowels = v.filter(Boolean).length;
+    s = 1.5;
+    if (vowels >= 1) s += 1;
+    if (vowels === 2 && v[0] !== v[1] && v[1] !== v[2] && v[2] !== v[3]) s += 1; // cvcv of vcvc
+    if (!/[^aeiouy]{3}/.test(n)) s += 0.5; // geen 3 medeklinkers achter elkaar
+    if (n[0] === n[2] && n[1] === n[3] || n[0] === n[3] && n[1] === n[2]) s += 0.5; // abab of abba
+    if (/[xzk]$/.test(n)) s += 0.5; // stoer einde
+  } else if (type === 'w') {
     s = 4.5 - 0.5 * Math.max(0, n.length - 5);
     s = Math.max(1.5, s);
   } else if (type === '4') {
@@ -107,4 +125,21 @@ export function scoreName(name, type) {
 export function stars(score) {
   const full = Math.floor(score);
   return '★'.repeat(full) + (score % 1 ? '½' : '') + '☆'.repeat(5 - Math.ceil(score));
+}
+
+// ---------- Ontdekt: alle namen van 4 letters (a-z) ----------
+// Bedoeld om namen te vinden die nog nooit geclaimd zijn. De waardevolle 4-tekens namen
+// (lijst '4') worden apart en vaker gecheckt en zitten hier niet nog eens in.
+export function discoveryNames() {
+  const L = "abcdefghijklmnopqrstuvwxyz";
+  const out = [];
+  for (const a of L) for (const b of L) for (const c of L) for (const d of L) out.push(a + b + c + d);
+  return out;
+}
+
+// Namen die Mojang (vrijwel zeker) blokkeert: niet tonen als 'beschikbaar'.
+const BLOCK = ['fuck', 'fuc', 'fck', 'fvk', 'shit', 'bitch', 'cunt', 'dick', 'cock', 'penis', 'pussy', 'porn', 'sex', 'cum', 'jizz', 'dildo', 'boner', 'tit', 'whore', 'slut', 'hussy', 'nig', 'negro', 'fag', 'kyke', 'kike', 'jap', 'spic', 'spick', 'kkk', 'nazi', 'hitler', 'rape', 'anal', 'arse', 'semen', 'sperm', 'pubic', 'pubes', 'nooky', 'minge', 'hymen', 'grope', 'injun', 'suicide', 'drugs', 'pikey', 'sodom', 'voyeur', 'beastal', 'booby', 'diddy', 'clite', 'nude', 'sucking'];
+export function isBlocked(name) {
+  const n = name.toLowerCase();
+  return BLOCK.some((b) => n.includes(b));
 }

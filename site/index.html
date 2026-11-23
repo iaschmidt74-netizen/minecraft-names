@@ -167,6 +167,8 @@
   .stars .off { color: #3a4152; }
   tr.top .name { color: #fbbf24; text-shadow: 0 0 12px rgba(251, 191, 36, 0.35); }
   tr.top { box-shadow: inset 3px 0 0 #fbbf24; }
+  .tag.td { color: #2dd4bf; background: rgba(45, 212, 191, 0.12); }
+  .more { padding: 12px 18px; color: var(--muted); font-size: 13px; text-align: center; }
   .tag.tw { color: var(--cw); background: rgba(192, 132, 252, 0.12); }
   .time { color: var(--muted); font-variant-numeric: tabular-nums; }
   .actions { display: flex; gap: 6px; justify-content: flex-end; }
@@ -228,6 +230,7 @@
       <label class="filter"><span class="left"><input type="checkbox" value="3" checked><span class="check"></span>3 tekens</span><span class="count" data-count="3">0</span></label>
       <label class="filter"><span class="left"><input type="checkbox" value="4" checked><span class="check"></span>4 tekens</span><span class="count" data-count="4">0</span></label>
       <label class="filter"><span class="left"><input type="checkbox" value="w" checked><span class="check"></span>Woorden</span><span class="count" data-count="w">0</span></label>
+      <label class="filter"><span class="left"><input type="checkbox" value="d" checked><span class="check"></span>4 letters (ontdekt)</span><span class="count" data-count="d">0</span></label>
     </div>
 
     <div>
@@ -235,12 +238,15 @@
       <div class="stats">
         <div class="stat"><div class="label">Laatste scan</div><div class="value" id="last-scan">–</div></div>
         <div class="stat"><div class="label">Nu vrij</div><div class="value green" id="free-count">0</div></div>
+        <div class="stat"><div class="label">Beschikbaar</div><div class="value" id="avail-count" style="color:#60a5fa">0</div></div>
         <div class="stat" style="grid-column: 1 / -1;"><div class="label">Snelle lijst</div><div class="value" id="hot">0 namen</div><div class="label" id="hot-sub">Namen die vaak wisselen</div></div>
         <div class="stat" style="grid-column: 1 / -1;">
           <div class="label">Ronde 3 tekens <span id="p3" style="float:right">0%</span></div>
           <div class="progress"><div id="p3-bar" style="width:0%"></div></div>
           <div class="label" style="margin-top:12px">Ronde 4 tekens <span id="p4" style="float:right">0%</span></div>
           <div class="progress"><div id="p4-bar" style="width:0%"></div></div>
+          <div class="label" style="margin-top:12px">Ronde 4 letters (ontdekt) <span id="pd" style="float:right">0%</span></div>
+          <div class="progress"><div id="pd-bar" style="width:0%"></div></div>
           <div class="label" style="margin-top:12px">Ronde woorden <span id="pw" style="float:right">0%</span></div>
           <div class="progress"><div id="pw-bar" style="width:0%"></div></div>
         </div>
@@ -279,6 +285,23 @@
       </table>
     </div>
 
+    <div class="section-head"><h3>Nu beschikbaar</h3><span class="count" id="avail-count2">0</span></div>
+    <p style="margin:-6px 0 12px;color:var(--muted);font-size:13px">Namen die nog nooit geclaimd zijn. Mojang kan ze wel geblokkeerd hebben: probeer ze op minecraft.net/msaprofile.</p>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th class="no-sort">Naam</th>
+            <th class="no-sort">Soort</th>
+            <th class="no-sort">Waarde</th>
+            <th class="no-sort hide-sm">Gevonden</th>
+            <th class="no-sort" style="text-align:right">Actie</th>
+          </tr>
+        </thead>
+        <tbody id="avail-body"></tbody>
+      </table>
+    </div>
+
     <div class="section-head"><h3>Weer geclaimd</h3><span class="count" id="claimed-count">0</span></div>
     <div class="card">
       <table>
@@ -302,6 +325,8 @@
   const MIN = 60 * 1000, HOUR = 60 * MIN, DAY = 24 * HOUR;
   let freed = [];
   let claimed = [];
+  let available = [];
+  let availableTotal = 0;
   let status = null;
 
   // Live-lijst: freed.json op branch "live", via de GitHub-API (max 60 keer/uur zonder login, dus elke 2 min).
@@ -328,6 +353,8 @@
       const l = await fetchLive();
       const best = l && (l.updatedAt || 0) > (f.updatedAt || 0) ? l : f;
       freed = best.freed || [];
+      available = best.available || [];
+      availableTotal = best.availableTotal ?? available.length;
       claimed = (best.claimed || []).map((c) => ({ ...c, wasFree: c.claimedAt - c.freedAt }));
       status = s;
     } catch {
@@ -351,6 +378,8 @@
 
     document.getElementById('p3-bar').style.width = pct(t['3']);
     document.getElementById('p4').textContent = pct(t['4']);
+    document.getElementById('pd').textContent = pct(t['d']);
+    document.getElementById('pd-bar').style.width = pct(t['d']);
     document.getElementById('p4-bar').style.width = pct(t['4']);
     document.getElementById('pw-bar').style.width = pct(t['w']);
     document.getElementById('p3').textContent = pct(t['3']);
@@ -367,8 +396,8 @@
     document.getElementById('live').style.color = stale ? 'var(--red)' : '';
   }
 
-  const TYPE_LABEL = { '3': '3 tekens', '4': '4 tekens', 'w': 'Woord' };
-  const TYPE_CLASS = { '3': 't3', '4': 't4', 'w': 'tw' };
+  const TYPE_LABEL = { '3': '3 tekens', '4': '4 tekens', 'w': 'Woord', 'd': '4 letters' };
+  const TYPE_CLASS = { '3': 't3', '4': 't4', 'w': 'tw', 'd': 'td' };
   let sortKey = 'freedAt', sortDir = -1;
 
   function ago(ts) {
@@ -418,6 +447,23 @@
       </tr>`;
     }).join('') : '<tr><td colspan="5" class="empty">Geen namen gevonden met deze filters.</td></tr>';
 
+    const arows = available.filter(match);
+    const SHOW = 200;
+    document.getElementById('avail-body').innerHTML = arows.length ? arows.slice(0, SHOW).map((r) => `
+      <tr class="${(r.score || 0) >= 4.5 ? 'top' : ''}">
+        <td><span class="name">${esc(r.name)}</span></td>
+        <td><span class="tag ${TYPE_CLASS[r.type]}">${TYPE_LABEL[r.type]}</span></td>
+        <td>${starsHtml(r.score)}</td>
+        <td class="time hide-sm">${ago(r.since)}</td>
+        <td><div class="actions">
+          <button class="btn primary" data-copy="${esc(r.name)}">Kopieer</button>
+          <a class="btn" href="https://namemc.com/search?q=${encodeURIComponent(r.name)}" target="_blank" rel="noopener">NameMC ↗</a>
+        </div></td>
+      </tr>`).join('') + (arows.length > SHOW ? `<tr><td colspan="5" class="more">en nog ${arows.length - SHOW} namen (de beste staan bovenaan)</td></tr>` : '')
+      : '<tr><td colspan="5" class="empty">Nog geen beschikbare namen gevonden.</td></tr>';
+    document.getElementById('avail-count').textContent = availableTotal;
+    document.getElementById('avail-count2').textContent = availableTotal;
+
     const crow = claimed.filter(match);
     document.getElementById('claimed-body').innerHTML = crow.length ? crow.map((r) => `
       <tr class="claimed">
@@ -428,8 +474,8 @@
         <td class="time hide-sm">${ago(r.claimedAt)}</td>
       </tr>`).join('') : '<tr><td colspan="5" class="empty">Nog niets geclaimd.</td></tr>';
 
-    for (const t of ['3', '4', 'w']) {
-      document.querySelector(`[data-count="${t}"]`).textContent = freed.filter((r) => r.type === t).length;
+    for (const t of ['3', '4', 'w', 'd']) {
+      document.querySelector(`[data-count="${t}"]`).textContent = freed.filter((r) => r.type === t).length + available.filter((r) => r.type === t).length;
     }
     document.getElementById('free-count').textContent = freed.length;
     document.getElementById('claimed-count').textContent = claimed.length;
