@@ -66,6 +66,15 @@ const MAX_AVAILABLE_SHOWN = 1500;
 let availDirty = false;
 
 const seen = {}, taken = {};
+// Account-ID (UUID) van de eigenaar per bezette naam, voor lijsten 3, 4 en w.
+// Hiermee zien we bij een vrijgekomen naam of de eigenaar alleen van naam veranderd is.
+const ID_TIERS = new Set(['3', '4', 'w']);
+class Ids {
+  constructor(size, buf) { this.a = buf && buf.length === size * 16 ? new Uint8Array(buf) : new Uint8Array(size * 16); }
+  get(i) { const b = this.a.subarray(i * 16, i * 16 + 16); return b.some((x) => x) ? Buffer.from(b).toString('hex') : null; }
+  set(i, hex) { if (hex && /^[0-9a-f]{32}$/.test(hex)) this.a.set(Buffer.from(hex, 'hex'), i * 16); }
+}
+const ids = {};
 for (const t of Object.values(tiers)) {
   // Als de woordenlijst verandert, klopt de oude status niet meer: opnieuw beginnen.
   if (state.sizes?.[t.id] !== undefined && state.sizes[t.id] !== t.size) {
@@ -77,6 +86,10 @@ for (const t of Object.values(tiers)) {
   }
   state.cursors[t.id] ??= 0;
   state.passes[t.id] ??= 0;
+  if (ID_TIERS.has(t.id)) {
+    const p = join(STATE_DIR, `ids-${t.id}.bin.gz`);
+    ids[t.id] = new Ids(t.size, existsSync(p) && state.sizes?.[t.id] === t.size ? gunzipSync(readFileSync(p)) : null);
+  }
 }
 state.sizes = Object.fromEntries(Object.values(tiers).map((t) => [t.id, t.size]));
 
@@ -121,9 +134,9 @@ async function bulkLookup(names) {
       if (!res.ok) { stats.errors++; await sleep(2_000 * (attempt + 1)); continue; }
       const data = await res.json();
       onOk();
-      const set = new Set(data.map((p) => p.name.toLowerCase()));
-      for (const f of FAKE_FREE) set.delete(f);
-      return set;
+      const map = new Map(data.map((p) => [p.name.toLowerCase(), p.id]));
+      for (const f of FAKE_FREE) map.delete(f);
+      return map;
     } catch (e) {
       stats.errors++;
       await sleep(2_000 * (attempt + 1));
@@ -163,10 +176,21 @@ async function notifyFreed(entry) {
   if (!hookFor(entry)) return;
   if (discordSent >= MAX_DISCORD_PER_RUN) { pendingDiscord.push(entry.name); return; }
   discordSent++;
+  const hold = entry.status === 'hold' && !entry.dropped;
+  const t = Math.floor((entry.dropAt || 0) / 1000);
   const body = {
     username: 'MC Name Sniper',
     embeds: [{
-      title: `🟢 ${entry.name} ${stars(entry.score)} just became available!`,
+      title: hold
+        ? `⏳ ${entry.name} ${stars(entry.score)} will drop <t:${t}:R>`
+        : entry.dropped
+          ? `🟢 ${entry.name} ${stars(entry.score)} should be available NOW!`
+          : `🟢 ${entry.name} ${stars(entry.score)} just became available!`,
+      description: hold
+        ? `The owner changed their name to **${entry.newName}**. The old name is reserved for ~${HOLD_DAYS} days.\nExpected drop: <t:${t}:F> (<t:${t}:R>). You will get another message when it drops.`
+        : entry.dropped
+          ? `The reservation period has ended. Try to claim it right away!`
+          : entry.reason === 'deleted' ? 'The old account no longer exists, so the name may be claimable right now.' : undefined,
       url: `https://namemc.com/search?q=${encodeURIComponent(entry.name)}`,
       color: isGold(entry) ? 0xfbbf24 : 0x34d399,
       fields: [
@@ -296,12 +320,44 @@ function markClaimed(name, now) {
   log(`Weer geclaimd: ${name}`);
 }
 
-async function markFreed(tier, name) {
+// Bij een naamswijziging blijft de oude naam ~37 dagen gereserveerd voor de oude eigenaar.
+const HOLD_DAYS = 37;
+
+// Huidige naam van een account-ID: string = bestaat nog (nieuwe naam), false = account weg, null = onbekend.
+async function currentNameOf(id) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await throttle();
+    stats.requests++;
+    try {
+      const res = await fetch(`https://sessionserver.mojang.com/session/minecraft/profile/${id}`, {
+        headers: { 'User-Agent': 'mc-name-scanner' }, signal: AbortSignal.timeout(15_000),
+      });
+      if (res.status === 429) { slowDown(); await sleep(20_000); continue; }
+      if (res.status === 204 || res.status === 404) return false;
+      if (res.ok) return (await res.json()).name || null;
+    } catch {}
+    await sleep(2_000 * (attempt + 1));
+  }
+  return null;
+}
+
+async function markFreed(tier, name, prevId) {
   const ok = await confirmFree(name);
   if (ok !== true) return false; // toch bezet of onzeker: niets veranderen
-  const entry = { name, type: tier.id, freedAt: Date.now(), score: scoreName(name, tier.id) };
+  const now = Date.now();
+  const entry = { name, type: tier.id, freedAt: now, score: scoreName(name, tier.id), status: 'free' };
+  if (prevId) {
+    const cur = await currentNameOf(prevId);
+    if (typeof cur === 'string') {
+      entry.status = 'hold';
+      entry.newName = cur;
+      entry.dropAt = now + HOLD_DAYS * 86_400_000;
+    } else if (cur === false) {
+      entry.reason = 'deleted';
+    }
+  }
   freedMap.set(name, entry);
-  log(`VRIJGEKOMEN: ${name} (${TYPE_LABEL[tier.id]})`);
+  log(`VRIJGEKOMEN: ${name} (${TYPE_LABEL[tier.id]})${entry.status === 'hold' ? `, verwacht beschikbaar ${new Date(entry.dropAt).toISOString().slice(0, 10)} (nieuwe naam eigenaar: ${entry.newName})` : ''}`);
   liveDirty = true;
   await notifyFreed(entry);
   await publishLive();
@@ -316,12 +372,13 @@ async function processEntries(entries) {
   for (const { tier, idx, name } of entries) {
     const wasSeen = seen[tier.id].get(idx), wasTaken = taken[tier.id].get(idx);
     if (takenNow.has(name)) {
+      ids[tier.id]?.set(idx, takenNow.get(name));
       if (wasSeen && !wasTaken) bump(name, tier.id, now); // vrij -> bezet
       if (state.available[name]) { delete state.available[name]; availDirty = true; log(`Beschikbare naam geclaimd: ${name}`); }
       if (freedMap.has(name)) markClaimed(name, now);
       taken[tier.id].set(idx, 1);
     } else if (wasSeen && wasTaken) {
-      if (await markFreed(tier, name)) { taken[tier.id].set(idx, 0); bump(name, tier.id, now); }
+      if (await markFreed(tier, name, ids[tier.id]?.get(idx))) { taken[tier.id].set(idx, 0); bump(name, tier.id, now); }
     } else {
       taken[tier.id].set(idx, 0);
       if (!state.available[name] && !freedMap.has(name) && !isBlocked(name)) {
@@ -335,6 +392,20 @@ async function processEntries(entries) {
   }
   stats.checked += entries.length;
   return true;
+}
+
+// Gereserveerde namen waarvan de datum voorbij is: melden dat ze nu vrij moeten zijn.
+async function checkDrops() {
+  const now = Date.now();
+  for (const e of freedMap.values()) {
+    if (e.status !== 'hold' || e.dropped || now < e.dropAt) continue;
+    e.dropped = true;
+    e.status = 'free';
+    e.droppedAt = now;
+    liveDirty = true;
+    log(`GERESERVEERDE NAAM VRIJ: ${e.name}`);
+    await notifyFreed(e);
+  }
 }
 
 async function checkHot(level) {
@@ -354,6 +425,7 @@ async function scanTiers(deadline) {
   const done = Object.fromEntries(Object.keys(tiers).map((k) => [k, 0]));
   while (Date.now() < deadline) {
     for (const level of LEVELS) if (Date.now() - level.last >= level.everyMs) await checkHot(level);
+    await checkDrops();
     const t = Object.values(tiers).reduce((best, x) => (done[x.id] / x.weight < done[best.id] / best.weight ? x : best));
     const start = state.cursors[t.id];
     const entries = [];
@@ -438,6 +510,7 @@ function save() {
   for (const t of Object.values(tiers)) {
     writeFileSync(join(STATE_DIR, `seen-${t.id}.bin.gz`), gzipSync(seen[t.id].a));
     writeFileSync(join(STATE_DIR, `taken-${t.id}.bin.gz`), gzipSync(taken[t.id].a));
+    if (ids[t.id]) writeFileSync(join(STATE_DIR, `ids-${t.id}.bin.gz`), gzipSync(ids[t.id].a));
   }
   state.freed = [...freedMap.values()].sort((a, b) => b.freedAt - a.freedAt);
   for (const e of [...state.freed, ...state.claimed]) e.score ??= scoreName(e.name, e.type);
