@@ -295,6 +295,16 @@
       </table>
     </div>
 
+    <div class="section-head"><h3>🎯 Volglijst</h3><span class="count" id="watch-count">0</span>
+      <a class="btn" id="watch-edit" href="#" target="_blank" rel="noopener" style="margin-left:auto">✏️ Namen toevoegen</a></div>
+    <p style="margin:-6px 0 12px;color:var(--muted);font-size:13px">Namen die je zelf volgt, bijv. drops van NameMC. Elke minuut gecheckt, rond de droptijd elke 10 seconden.</p>
+    <div class="card">
+      <table>
+        <thead><tr><th class="no-sort">Naam</th><th class="no-sort">Droptijd</th><th class="no-sort">Status</th><th class="no-sort" style="text-align:right">Actie</th></tr></thead>
+        <tbody id="watch-body"></tbody>
+      </table>
+    </div>
+
     <div class="section-head"><h3>Nu beschikbaar</h3><span class="count" id="avail-count2">0</span></div>
     <p style="margin:-6px 0 12px;color:var(--muted);font-size:13px">Namen die nog nooit geclaimd zijn. Mojang kan ze wel geblokkeerd hebben: probeer ze op minecraft.net/msaprofile.</p>
     <div class="card">
@@ -336,6 +346,7 @@
   let freed = [];
   let claimed = [];
   let available = [];
+  let watch = [];
   let availableTotal = 0;
   let status = null;
 
@@ -356,6 +367,7 @@
   {
     const owner = location.hostname.endsWith(".github.io") ? location.hostname.split(".")[0] : "iaschmidt74-netizen";
     const repo = location.pathname.split("/").filter(Boolean)[0] || "minecraft-names";
+    document.getElementById("watch-edit").href = `https://github.com/${owner}/${repo}/edit/main/data/watch.txt`;
     document.getElementById("run-btn").href = `https://github.com/${owner}/${repo}/actions/workflows/scan.yml`;
   }
 
@@ -370,6 +382,7 @@
       const best = l && (l.updatedAt || 0) > (f.updatedAt || 0) ? l : f;
       freed = best.freed || [];
       available = best.available || [];
+      watch = best.watch || [];
       availableTotal = best.availableTotal ?? available.length;
       claimed = (best.claimed || []).map((c) => ({ ...c, wasFree: c.claimedAt - c.freedAt }));
       status = s;
@@ -472,6 +485,29 @@
         </div></td>
       </tr>`;
     }).join('') : '<tr><td colspan="6" class="empty">Geen namen gevonden met deze filters.</td></tr>';
+
+    const q2 = document.getElementById("search").value.trim().toLowerCase();
+    const wrows = watch.filter((w) => w.name.includes(q2));
+    document.getElementById("watch-count").textContent = watch.length;
+    document.getElementById("watch-body").innerHTML = wrows.length ? wrows.map((w) => {
+      let drop = "–";
+      if (w.dropAt) {
+        const d = new Date(w.dropAt), diff = w.dropAt - Date.now();
+        const when = d.toLocaleDateString("nl-NL", { day: "numeric", month: "short" }) + " " + d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+        const rel = diff > DAY ? `over ${Math.ceil(diff / DAY)} dagen` : diff > HOUR ? `over ${Math.round(diff / HOUR)} uur` : diff > 0 ? `over ${Math.max(1, Math.round(diff / MIN))} min` : "voorbij";
+        drop = `<span class="hold">📅 ${when}<br><small>${rel}</small></span>`;
+      }
+      const status = w.taken === false ? '<span class="nowfree">✅ VRIJ, claim nu!</span>' : w.taken === true ? '<span class="time">🔒 bezet</span>' : '<span class="time">nog niet gecheckt</span>';
+      return `<tr class="${w.taken === false ? "top" : ""}">
+        <td><span class="name">${esc(w.name)}</span></td>
+        <td>${drop}</td>
+        <td>${status}</td>
+        <td><div class="actions">
+          <button class="btn primary" data-copy="${esc(w.name)}">Kopieer</button>
+          <a class="btn" href="https://namemc.com/search?q=${encodeURIComponent(w.name)}" target="_blank" rel="noopener">NameMC ↗</a>
+        </div></td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="4" class="empty">Nog geen namen op je volglijst. Klik op "Namen toevoegen".</td></tr>';
 
     const arows = available.filter(match);
     const SHOW = 200;

@@ -394,6 +394,95 @@ async function processEntries(entries) {
   return true;
 }
 
+// ---------- Volglijst (data/watch.txt) ----------
+// Namen die de gebruiker zelf volgt, eventueel met droptijd (Nederlandse tijd).
+// Elke minuut gecheckt; van 10 min vóór tot 30 min na de droptijd elke 10 seconden.
+function amsterdamToUtc(y, mo, d, h, mi) {
+  const guess = Date.UTC(y, mo - 1, d, h, mi);
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Amsterdam', hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' })
+    .formatToParts(new Date(guess)).map((p) => [p.type, p.value]));
+  const asAms = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute);
+  return guess - (asAms - guess);
+}
+function parseWatch(text) {
+  const out = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^([A-Za-z0-9_]{3,16})(?:\s+(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?)?$/);
+    if (!m) { log(`Volglijst: regel overgeslagen: "${line}"`); continue; }
+    const dropAt = m[2] ? amsterdamToUtc(+m[2], +m[3], +m[4], +(m[5] ?? 0), +(m[6] ?? 0)) : null;
+    out.push({ name: m[1].toLowerCase(), dropAt });
+  }
+  return out;
+}
+function loadWatch() {
+  const p = join(ROOT, 'data', 'watch.txt');
+  return existsSync(p) ? parseWatch(readFileSync(p, 'utf8')) : [];
+}
+let watchList = loadWatch();
+let lastWatchReload = Date.now();
+// Tijdens de run de volglijst elke 2 minuten opnieuw ophalen van GitHub (main),
+// zodat een aanpassing via de site meteen meetelt.
+async function reloadWatch() {
+  if (!GH_TOKEN || !GH_REPO || Date.now() - lastWatchReload < 120_000) return;
+  lastWatchReload = Date.now();
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GH_REPO}/contents/data/watch.txt?ref=main`, {
+      headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: 'application/vnd.github.raw+json', 'User-Agent': 'mc-name-scanner' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return;
+    const next = parseWatch(await res.text());
+    const before = watchList.map((w) => w.name + w.dropAt).join();
+    if (next.map((w) => w.name + w.dropAt).join() !== before) {
+      watchList = next;
+      lastWatch = 0;
+      liveDirty = true;
+      log(`Volglijst bijgewerkt: ${watchList.map((w) => w.name).join(', ') || '(leeg)'}`);
+    }
+  } catch {}
+}
+state.watch ??= {}; // name -> { taken, since, notifiedAt }
+for (const n of Object.keys(state.watch)) if (!watchList.some((w) => w.name === n)) delete state.watch[n];
+let lastWatch = 0;
+
+function watchIntervalMs(now) {
+  const near = watchList.some((w) => w.dropAt && now >= w.dropAt - 10 * 60_000 && now <= w.dropAt + 30 * 60_000);
+  return near ? 10_000 : 60_000;
+}
+
+async function checkWatch() {
+  await reloadWatch();
+  const now = Date.now();
+  if (!watchList.length || now - lastWatch < watchIntervalMs(now)) return;
+  lastWatch = now;
+  for (let k = 0; k < watchList.length; k += 10) {
+    const chunk = watchList.slice(k, k + 10);
+    const takenNow = await bulkLookup(chunk.map((w) => w.name));
+    if (!takenNow) continue;
+    for (const w of chunk) {
+      const st = state.watch[w.name] || (state.watch[w.name] = { taken: null, since: now });
+      const isTaken = takenNow.has(w.name);
+      if (st.taken !== isTaken) { st.taken = isTaken; st.since = now; liveDirty = true; }
+      st.dropAt = w.dropAt;
+      if (!isTaken && !st.notifiedAt) {
+        st.notifiedAt = now;
+        log(`VOLGLIJST VRIJ: ${w.name}`);
+        await postDiscord({ username: 'MC Name Sniper', embeds: [{
+          title: `🎯 ${w.name} from your watchlist is available NOW!`,
+          url: `https://namemc.com/search?q=${encodeURIComponent(w.name)}`,
+          description: 'Claim it right away at minecraft.net/msaprofile → Change name. Snipers may be faster, so be quick!',
+          color: 0xfbbf24,
+          timestamp: new Date(now).toISOString(),
+        }] }, WEBHOOK_3);
+        await publishLive();
+      }
+      if (isTaken) st.notifiedAt = null; // weer bezet: volgende keer opnieuw melden
+    }
+  }
+}
+
 // Gereserveerde namen waarvan de datum voorbij is: melden dat ze nu vrij moeten zijn.
 async function checkDrops() {
   const now = Date.now();
@@ -426,6 +515,7 @@ async function scanTiers(deadline) {
   while (Date.now() < deadline) {
     for (const level of LEVELS) if (Date.now() - level.last >= level.everyMs) await checkHot(level);
     await checkDrops();
+    await checkWatch();
     const t = Object.values(tiers).reduce((best, x) => (done[x.id] / x.weight < done[best.id] / best.weight ? x : best));
     const start = state.cursors[t.id];
     const entries = [];
@@ -465,7 +555,8 @@ function freedPayload() {
     .map(([name, a]) => ({ name, ...a }))
     .sort((a, b) => b.score - a.score || a.name.length - b.name.length || b.since - a.since)
     .slice(0, MAX_AVAILABLE_SHOWN);
-  return { updatedAt: Date.now(), freed, claimed: state.claimed.slice(0, MAX_CLAIMED_KEPT), available, availableTotal: Object.keys(state.available).length };
+  const watch = watchList.map((w) => ({ name: w.name, dropAt: w.dropAt, ...(state.watch[w.name] || {}) }));
+  return { updatedAt: Date.now(), watch, freed, claimed: state.claimed.slice(0, MAX_CLAIMED_KEPT), available, availableTotal: Object.keys(state.available).length };
 }
 
 async function ensureLive() {
@@ -540,7 +631,16 @@ function save() {
   writeFileSync(join(OUT_DIR, 'status.json'), JSON.stringify(status));
 }
 
-const deadline = Date.now() + BUDGET_MS;
+const runStart = Date.now();
+let deadline = runStart + BUDGET_MS;
+// Valt een droptijd van de volglijst net na het eind van deze run? Dan iets langer doorgaan
+// (max 56 min in totaal, de job heeft een limiet van 59 min).
+if (BUDGET_MS >= 30 * 60_000) {
+  const hardStop = runStart + 56 * 60_000;
+  for (const w of watchList) {
+    if (w.dropAt && w.dropAt > deadline - 60_000 && w.dropAt < hardStop) deadline = Math.min(hardStop, Math.max(deadline, w.dropAt + 3 * 60_000));
+  }
+}
 log(`Start. Budget ${BUDGET_MS / 60000} min, ${freedMap.size} vrije namen bekend, cursors ${JSON.stringify(state.cursors)}`);
 await scanTiers(deadline);
 await flushDiscordSummary();

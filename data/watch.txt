@@ -1,0 +1,5 @@
+# Volglijst: namen die je in de gaten wilt houden (bijv. van de "drops" op NameMC).
+# Eén naam per regel, eventueel met de droptijd in Nederlandse tijd:
+#   naam
+#   naam 2026-11-25 14:30
+# Regels die met # beginnen worden genegeerd.
