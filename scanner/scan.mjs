@@ -21,6 +21,9 @@ const WEBHOOK = process.env.DISCORD_WEBHOOK || '';
 const WEBHOOK_3 = process.env.DISCORD_WEBHOOK_3 || WEBHOOK;
 const isGold = (e) => e.type === '3' || (e.score ?? 0) >= 4;
 const hookFor = (e) => (isGold(e) ? WEBHOOK_3 : WEBHOOK);
+// Discord-gebruikers-ID om te pingen als een naam echt vrij wordt (optioneel).
+const PING_USER = (process.env.DISCORD_PING_USER || '').trim();
+const ping = () => (/^\d{15,22}$/.test(PING_USER) ? { content: `<@${PING_USER}>`, allowed_mentions: { users: [PING_USER] } } : {});
 const FAKE_FREE = new Set((process.env.FAKE_FREE || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 
 const BULK_ENDPOINTS = [
@@ -180,6 +183,7 @@ async function notifyFreed(entry) {
   const t = Math.floor((entry.dropAt || 0) / 1000);
   const body = {
     username: 'MC Name Sniper',
+    ...(hold ? {} : ping()),
     embeds: [{
       title: hold
         ? `⏳ ${entry.name} ${stars(entry.score)} will drop <t:${t}:R>`
@@ -469,7 +473,7 @@ async function checkWatch() {
       if (!isTaken && !st.notifiedAt) {
         st.notifiedAt = now;
         log(`VOLGLIJST VRIJ: ${w.name}`);
-        await postDiscord({ username: 'MC Name Sniper', embeds: [{
+        await postDiscord({ username: 'MC Name Sniper', ...ping(), embeds: [{
           title: `🎯 ${w.name} from your watchlist is available NOW!`,
           url: `https://namemc.com/search?q=${encodeURIComponent(w.name)}`,
           description: 'Claim it right away at minecraft.net/msaprofile → Change name. Snipers may be faster, so be quick!',

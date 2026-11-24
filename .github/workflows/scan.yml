@@ -41,6 +41,7 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           DISCORD_WEBHOOK_3: ${{ secrets.DISCORD_WEBHOOK_3 }}
+          DISCORD_PING_USER: ${{ secrets.DISCORD_PING_USER }}
           # Voor de live-lijst op branch 'live' (zodat de site vrije namen meteen toont)
           GITHUB_TOKEN: ${{ github.token }}
           # Bij een push (alleen de site aangepast) kort scannen, anders ~52 minuten.
